@@ -21,14 +21,11 @@ import dataclasses
 import functools as ft
 import inspect
 import itertools as it
-import sys
-import warnings
 import weakref
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from typing import (
     Any,
-    get_args,
     get_type_hints,
     Literal,
     NoReturn,
@@ -37,8 +34,6 @@ from typing import (
     TypeVar,
     Union,
 )
-
-from jaxtyping import AbstractArray
 
 from ._config import config
 from ._errors import AnnotationError, TypeCheckError
@@ -250,46 +245,6 @@ def jaxtyped(fn=_sentinel, *, typechecker=_sentinel):
             )
         return _JaxtypingContext()
 
-    # Now check that a typechecker has been explicitly declared. (Or explicitly declared
-    # as not being used, via `typechecker=None`.)
-    # This is needed just for backward compatibility: an undeclared typechecker
-    # corresponds to the old double-decorator syntax.
-    if typechecker is _sentinel:
-        # This branch will also catch the easy-to-make mistake of
-        # ```python
-        # @jaxtyped(typechecker)
-        # def foo(...):
-        # ```
-        # which is a bug as `typechecker` is interpreted as the function to decorate!
-        warnings.warn(
-            "As of jaxtyping version 0.2.24, jaxtyping now prefers the syntax\n"
-            "```\n"
-            "from jaxtyping import jaxtyped\n"
-            "# Use your favourite typechecker: usually one of the two lines below.\n"
-            "from typeguard import typechecked as typechecker\n"
-            "from beartype import beartype as typechecker\n"
-            "\n"
-            "@jaxtyped(typechecker=typechecker)\n"
-            "def foo(...):\n"
-            "```\n"
-            "and the old double-decorator syntax\n"
-            "```\n"
-            "@jaxtyped\n"
-            "@typechecker\n"
-            "def foo(...):\n"
-            "```\n"
-            "should no longer be used. (It will continue to work as it did before, but "
-            "the new approach will produce more readable error messages.)\n"
-            "In particular note that `typechecker` must be passed via keyword "
-            "argument; the following is not valid:\n"
-            "```\n"
-            "@jaxtyped(typechecker)\n"
-            "def foo(...):\n"
-            "```\n",
-            stacklevel=2,
-        )
-        typechecker = None
-
     if fn is _sentinel:
         return ft.partial(jaxtyped, typechecker=typechecker)
     elif inspect.isclass(fn):
@@ -327,60 +282,7 @@ def jaxtyped(fn=_sentinel, *, typechecker=_sentinel):
         return property(fget=fget, fset=fset, fdel=fdel)
     else:
         if typechecker is None:
-            # Probably being used in the old style as
-            # ```
-            # @jaxtyped
-            # @typechecker
-            # def foo(x: int): ...
-            # ```
-            # in which case make a best-effort attempt to add shape information for any
-            # type errors.
-
-            # we want to detect generators, and ignore return annotations on them,
-            # to avoid issues with O(n) typechecking trying to typecheck yielded values
-            wrp = fn
-            while hasattr(wrp, "__wrapped__"):
-                wrp = wrp.__wrapped__
-
-            if inspect.isgeneratorfunction(wrp) or inspect.isasyncgenfunction(wrp):
-                # recursively parse all the annotations, and mark all the jaxtyping
-                # annotations as not needing instance checks, while still being
-                # visible as original ones for the typechecker
-                def modify_annotation(ann):
-                    if inspect.isclass(ann) and issubclass(ann, AbstractArray):
-                        ann.make_transparent()
-
-                    for sub_ann in get_args(ann):
-                        modify_annotation(sub_ann)
-
-                # just to make sure: check that fn has valid return annotations
-                if hasattr(fn, "__annotations__") and "return" in fn.__annotations__:
-                    modify_annotation(fn.__annotations__["return"])
-
-            signature = inspect.signature(fn)
-
-            @ft.wraps(fn)
-            def wrapped_fn(*args, **kwargs):  # pyright: ignore
-                __tracebackhide__ = True
-                bound = signature.bind(*args, **kwargs)
-                bound.apply_defaults()
-                memos = push_shape_memo(bound.arguments)
-                try:
-                    return fn(*args, **kwargs)
-                except Exception as e:
-                    # add_note api is support from python 3.11+
-                    if sys.version_info >= (3, 11) and _no_jaxtyping_note(e):
-                        shape_info = shape_str(memos)
-                        if shape_info != "":
-                            msg = (
-                                "The preceding error occurred within the scope of a "
-                                "`jaxtyping.jaxtyped` function, and may be due to a "
-                                "typecheck error. "
-                            )
-                            e.add_note(_jaxtyping_note_str(_spacer + msg + shape_info))
-                    raise
-                finally:
-                    pop_shape_memo()
+            assert False
 
         else:
             # New-style
