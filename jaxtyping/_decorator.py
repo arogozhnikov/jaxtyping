@@ -27,7 +27,6 @@ from contextlib import AbstractContextManager
 from typing import (
     Any,
     get_type_hints,
-    Literal,
     NoReturn,
     overload,
     ParamSpec,
@@ -66,6 +65,10 @@ def _apply_typechecker(typechecker, fn):
     return typechecker(fn)
 
 
+def jaxtyped_context() -> AbstractContextManager[None]:
+    return _JaxtypingContext()
+
+
 @overload
 def jaxtyped(
     *,
@@ -81,10 +84,6 @@ def jaxtyped(fn: type[_T], *, typechecker=_sentinel) -> type[_T]: ...
 def jaxtyped(
     fn: Callable[_Params, _Return], *, typechecker=_sentinel
 ) -> Callable[_Params, _Return]: ...
-
-
-@overload
-def jaxtyped(fn: Literal["context"]) -> AbstractContextManager[None]: ...
 
 
 def jaxtyped(fn=_sentinel, *, typechecker=_sentinel):
@@ -192,14 +191,7 @@ def jaxtyped(fn=_sentinel, *, typechecker=_sentinel):
         continuing to perform type-checking in whatever way you prefer.
 
         Conversely, if you would like a new dynamic context *without* calling a new
-        function, then in addition to the usage discussed above, `jaxtyped` also
-        supports being used as a context manager, by passing it the string `"context"`:
-        ```python
-        with jaxtyped("context"):
-            assert isinstance(x, Float[Array, "batch channel"])
-        ```
-        Usage like this is very rare; it's mostly only
-        useful when working at the global scope.
+        function, then in addition to the usage discussed above, use jaxtyped_context.
     """
 
     global _tb_flag
@@ -212,16 +204,7 @@ def jaxtyped(fn=_sentinel, *, typechecker=_sentinel):
             traceback_util.register_exclusion(__file__)
         _tb_flag = False
 
-    # First handle the `jaxtyped("context")` usage, which is a special case.
-    if fn == "context":
-        if typechecker is not _sentinel:
-            raise ValueError(
-                "Cannot use `jaxtyped` as a context with a typechecker. That is, "
-                "`with jaxtyped('context', typechecker=...):`. is not allowed. In this "
-                "case the type checker does not actually do anything, as there is no "
-                "function to type-check."
-            )
-        return _JaxtypingContext()
+    assert fn != "context", "not supported in this version"
 
     if fn is _sentinel:
         return ft.partial(jaxtyped, typechecker=typechecker)
@@ -322,8 +305,7 @@ def jaxtyped(fn=_sentinel, *, typechecker=_sentinel):
                         f"{module_name}.{qualname}.{argmsg}\n"
                         "----------------------\n"
                         f"Called with parameters: {param_values}\n"
-                        f"Parameter annotations: {param_hints}.\n"
-                        + shape_str(memos)
+                        f"Parameter annotations: {param_hints}.\n" + shape_str(memos)
                     )
                     if config.jaxtyping_remove_typechecker_stack:
                         raise TypeCheckError(msg) from None
@@ -375,8 +357,7 @@ def jaxtyped(fn=_sentinel, *, typechecker=_sentinel):
                         f"Expected type: {return_hint}.\n"
                         "----------------------\n"
                         f"Called with parameters: {param_values}\n"
-                        f"Parameter annotations: {param_hints}.\n"
-                        + shape_str(memos)
+                        f"Parameter annotations: {param_hints}.\n" + shape_str(memos)
                     )
                     if config.jaxtyping_remove_typechecker_stack:
                         raise TypeCheckError(msg) from None

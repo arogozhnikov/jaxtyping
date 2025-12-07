@@ -3,18 +3,20 @@ import dataclasses
 import sys
 from typing import no_type_check
 
+import beartype
 import equinox as eqx
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
 import typeguard
 
-from jaxtyping import Array, Float, jaxtyped, print_bindings
+from jaxtyping import Array, Float, jaxtyped, jaxtyped_context, print_bindings
 
 from .helpers import assert_no_garbage, ParamError, ReturnError
 
-import beartype
+
 typechecker = beartype.beartype
+
 
 class M(metaclass=abc.ABCMeta):
     @jaxtyped(typechecker=typechecker)
@@ -90,7 +92,7 @@ def test_property():
 def test_context(getkey):
     a = jr.normal(getkey(), (3, 4))
     b = jr.normal(getkey(), (5,))
-    with jaxtyped("context"):
+    with jaxtyped_context():
         assert isinstance(a, Float[Array, "foo bar"])
         assert not isinstance(b, Float[Array, "foo"])
     assert isinstance(a, Float[Array, "foo bar"])
