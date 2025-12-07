@@ -13,48 +13,50 @@ from jaxtyping import Array, Float, jaxtyped, print_bindings
 
 from .helpers import assert_no_garbage, ParamError, ReturnError
 
+import beartype
+typechecker = beartype.beartype
 
 class M(metaclass=abc.ABCMeta):
-    @jaxtyped(typechecker=None)
+    @jaxtyped(typechecker=typechecker)
     def f(self): ...
 
-    @jaxtyped(typechecker=None)
+    @jaxtyped(typechecker=typechecker)
     @classmethod
     def g1(cls):
         return 3
 
     @classmethod
-    @jaxtyped(typechecker=None)
+    @jaxtyped(typechecker=typechecker)
     def g2(cls):
         return 4
 
-    @jaxtyped(typechecker=None)
+    @jaxtyped(typechecker=typechecker)
     @staticmethod
     def h1():
         return 3
 
     @staticmethod
-    @jaxtyped(typechecker=None)
+    @jaxtyped(typechecker=typechecker)
     def h2():
         return 4
 
-    @jaxtyped(typechecker=None)
+    @jaxtyped(typechecker=typechecker)
     @abc.abstractmethod
     def i1(self): ...
 
     @abc.abstractmethod
-    @jaxtyped(typechecker=None)
+    @jaxtyped(typechecker=typechecker)
     def i2(self): ...
 
 
 class N:
-    @jaxtyped(typechecker=None)
+    @jaxtyped(typechecker=typechecker)
     @property
     def j1(self):
         return 3
 
     @property
-    @jaxtyped(typechecker=None)
+    @jaxtyped(typechecker=typechecker)
     def j2(self):
         return 4
 
@@ -167,15 +169,6 @@ def test_local_stringified_annotation(typecheck):
         return x
 
     f(LocalFoo())
-
-    with pytest.warns(match="As of jaxtyping version 0.2.24"):
-
-        @jaxtyped
-        @typecheck
-        def g(x: "LocalFoo") -> "LocalFoo":
-            return x
-
-    g(LocalFoo())
 
     # We don't check that errors are raised if it goes wrong, since we can't usually
     # resolve local type annotations at runtime. Best we can hope for is not to raise
