@@ -17,6 +17,9 @@
 # IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 # CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+# FIXME: actual speedup
+# FIXME: reflect changes in readme
+
 import dataclasses
 import functools as ft
 import inspect
@@ -51,6 +54,8 @@ class _Sentinel:
     def __repr__(self):
         return "sentinel"
 
+class _Counter:
+    value: int = 0 # TODO randomize
 
 _sentinel = _Sentinel()
 _tb_flag = True
@@ -378,6 +383,11 @@ def jaxtyped(fn=_sentinel, *, typechecker=_sentinel):
                 or getattr(wrapped_fn_holder[0](), "__no_type_check__", False)
             ):
                 return fn(*args, **kwargs)
+            
+            _Counter.value += 1
+            if _Counter.value.bit_count() > config.check_frequency:
+                with _JaxtypingContext():
+                    return fn(*args, **kwargs)
 
             # Raise bind-time errors before we do any shape analysis. (I.e. skip
             # the pointless jaxtyping information for a non-typechecking failure.)
