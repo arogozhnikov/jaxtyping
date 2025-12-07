@@ -144,14 +144,7 @@ def jaxtyped(fn=_sentinel, *, typechecker=_sentinel):
         f("a string is not an integer")  # this line should raise an exception
         ```
         Common choices are `typechecker=beartype.beartype` or
-        `typechecker=typeguard.typechecked`. Can also be set as `typechecker=None` to
-        skip automatic runtime type-checking, but still support manual `isinstance`
-        checks inside the function body:
-        ```python
-        @jaxtyped(typechecker=None)
-        def f(x):
-            assert isinstance(x, Float[Array, "batch channel"])
-        ```
+        `typechecker=typeguard.typechecked`.
 
     **Returns:**
 
@@ -160,20 +153,6 @@ def jaxtyped(fn=_sentinel, *, typechecker=_sentinel):
 
     If `fn` is a dataclass, then `fn` is returned directly, and additionally its
     `__init__` method is wrapped and modified in-place.
-
-    !!! Info "Old syntax"
-
-        jaxtyping previously (before v0.2.24) recommended using this double-decorator
-        syntax:
-        ```python
-        @jaxtyped
-        @typechecker
-        def f(...): ...
-        ```
-        This is still supported, but will now raise a warning recommending the
-        `jaxtyped(typechecker=typechecker)` syntax discussed above. (Which will produce
-        easier-to-debug error messages: under the hood, the new syntax more carefully
-        manipulates the typechecker so as to determine where a type-check error arises.)
 
     ??? Info "Notes for advanced users"
 
@@ -219,8 +198,7 @@ def jaxtyped(fn=_sentinel, *, typechecker=_sentinel):
         with jaxtyped("context"):
             assert isinstance(x, Float[Array, "batch channel"])
         ```
-        This is equivalent to placing this code inside a new function wrapped in
-        `jaxtyped(typechecker=None)`. Usage like this is very rare; it's mostly only
+        Usage like this is very rare; it's mostly only
         useful when working at the global scope.
     """
 
@@ -247,6 +225,7 @@ def jaxtyped(fn=_sentinel, *, typechecker=_sentinel):
 
     if fn is _sentinel:
         return ft.partial(jaxtyped, typechecker=typechecker)
+    # different special cases handled first and reduced to the last case
     elif inspect.isclass(fn):
         if dataclasses.is_dataclass(fn) and typechecker is not None:
             try:
@@ -281,167 +260,158 @@ def jaxtyped(fn=_sentinel, *, typechecker=_sentinel):
             fdel = jaxtyped(fn.fdel, typechecker=typechecker)
         return property(fget=fget, fset=fset, fdel=fdel)
     else:
-        if typechecker is None:
-            assert False
+        assert typechecker is not None and typechecker is not _sentinel
 
-        else:
-            # New-style
-            # ```
-            # @jaxtyped(typechecker=typechecker)
-            # def foo(x: int): ...
-            # ```
-            # in which case we can do a better job reporting errors.
+        full_signature = inspect.signature(fn)
+        new_params = []
+        for p_value in full_signature.parameters.values():
+            p_annotation = _destring_annotation(p_value.annotation, fn.__globals__)
+            p_value = p_value.replace(annotation=p_annotation)
+            new_params.append(p_value)
+        return_annotation = _destring_annotation(
+            full_signature.return_annotation, fn.__globals__
+        )
+        full_signature = full_signature.replace(
+            parameters=new_params, return_annotation=return_annotation
+        )
+        param_signature = full_signature.replace(return_annotation=Any)
+        name = getattr(fn, "__name__", "<no name found>")
+        qualname = getattr(fn, "__qualname__", "<no qualname found>")
+        module = getattr(fn, "__module__", "<generated_by_jaxtyping>")
 
-            full_signature = inspect.signature(fn)
-            new_params = []
-            for p_value in full_signature.parameters.values():
-                p_annotation = _destring_annotation(p_value.annotation, fn.__globals__)
-                p_value = p_value.replace(annotation=p_annotation)
-                new_params.append(p_value)
-            return_annotation = _destring_annotation(
-                full_signature.return_annotation, fn.__globals__
-            )
-            full_signature = full_signature.replace(
-                parameters=new_params, return_annotation=return_annotation
-            )
-            param_signature = full_signature.replace(return_annotation=Any)
-            name = getattr(fn, "__name__", "<no name found>")
-            qualname = getattr(fn, "__qualname__", "<no qualname found>")
-            module = getattr(fn, "__module__", "<generated_by_jaxtyping>")
+        # Use the same name so that typeguard warnings look correct.
+        full_fn, output_name = _make_fn_with_signature(
+            name, qualname, module, full_signature, output=True
+        )
+        param_fn = _make_fn_with_signature(
+            name, qualname, module, param_signature, output=False
+        )
+        full_fn = _apply_typechecker(typechecker, full_fn)
+        param_fn = _apply_typechecker(typechecker, param_fn)
 
-            # Use the same name so that typeguard warnings look correct.
-            full_fn, output_name = _make_fn_with_signature(
-                name, qualname, module, full_signature, output=True
-            )
-            param_fn = _make_fn_with_signature(
-                name, qualname, module, param_signature, output=False
-            )
-            full_fn = _apply_typechecker(typechecker, full_fn)
-            param_fn = _apply_typechecker(typechecker, param_fn)
-
-            def wrapped_fn_impl(args, kwargs, bound, memos):
-                __tracebackhide__ = True
-                # First type-check just the parameters before the function is
-                # called.
+        def wrapped_fn_impl(args, kwargs, bound, memos):
+            __tracebackhide__ = True
+            # First type-check just the parameters before the function is
+            # called.
+            try:
+                param_fn(*args, **kwargs)
+            except AnnotationError:
+                raise
+            except Exception:
                 try:
-                    param_fn(*args, **kwargs)
+                    argmsg = _get_problem_arg(
+                        param_signature,
+                        args,
+                        kwargs,
+                        bound.arguments,
+                        module,
+                        typechecker,
+                    )
+                except TypeCheckError as e:
+                    argmsg = str(e)
+                    try:
+                        module_name = fn.__module__
+                        qualname = fn.__qualname__
+                    except AttributeError:
+                        module_name = fn.__class__.__module__
+                        qualname = fn.__class__.__qualname__
+                    param_values = _pformat(bound.arguments, short_self=True)
+                    param_hints = _remove_typing(param_signature)
+                    msg = (
+                        "Type-check error whilst checking the parameters of "
+                        f"{module_name}.{qualname}.{argmsg}\n"
+                        "----------------------\n"
+                        f"Called with parameters: {param_values}\n"
+                        f"Parameter annotations: {param_hints}.\n"
+                        + shape_str(memos)
+                    )
+                    if config.jaxtyping_remove_typechecker_stack:
+                        raise TypeCheckError(msg) from None
+                    else:
+                        raise TypeCheckError(msg) from e
+
+            # Actually call the function.
+            out = fn(*args, **kwargs)
+
+            if full_signature.return_annotation is not inspect.Signature.empty:
+                # Now type-check the return value. We need to include the
+                # parameters in the type-checking here in case there are any
+                # type variables shared across the parameters and return.
+                #
+                # Incidentally this does mean that if `fn` mutates its arguments
+                # so that they no longer satisfy their type annotations, this
+                # will throw an error here. But that's like, super weird, so
+                # don't do that. An error in that scenario is probably still
+                # desirable.
+                #
+                # There is a small performance concern here when used in
+                # non-jit'd contexts, like PyTorch, due to the duplicate
+                # checking of the parameters. Unfortunately there doesn't seem
+                # to be a way around that, so c'est la vie.
+                kwargs[output_name] = out
+                try:
+                    full_fn(*args, **kwargs)
                 except AnnotationError:
                     raise
-                except Exception:
+                except Exception as e:
                     try:
-                        argmsg = _get_problem_arg(
-                            param_signature,
-                            args,
-                            kwargs,
-                            bound.arguments,
-                            module,
-                            typechecker,
-                        )
-                    except TypeCheckError as e:
-                        argmsg = str(e)
-                        try:
-                            module_name = fn.__module__
-                            qualname = fn.__qualname__
-                        except AttributeError:
-                            module_name = fn.__class__.__module__
-                            qualname = fn.__class__.__qualname__
-                        param_values = _pformat(bound.arguments, short_self=True)
-                        param_hints = _remove_typing(param_signature)
-                        msg = (
-                            "Type-check error whilst checking the parameters of "
-                            f"{module_name}.{qualname}.{argmsg}\n"
-                            "----------------------\n"
-                            f"Called with parameters: {param_values}\n"
-                            f"Parameter annotations: {param_hints}.\n"
-                            + shape_str(memos)
-                        )
-                        if config.jaxtyping_remove_typechecker_stack:
-                            raise TypeCheckError(msg) from None
-                        else:
-                            raise TypeCheckError(msg) from e
+                        module_name = fn.__module__
+                        qualname = fn.__qualname__
+                    except AttributeError:
+                        module_name = fn.__class__.__module__
+                        qualname = fn.__class__.__qualname__
+                    param_values = _pformat(bound.arguments, short_self=True)
+                    return_value = _pformat(out, short_self=False)
+                    param_hints = _remove_typing(param_signature)
+                    return_hint = _remove_typing(full_signature.return_annotation)
+                    if return_hint.startswith("<class '") and return_hint.endswith(
+                        "'>"
+                    ):
+                        return_hint = return_hint[8:-2]
+                    msg = (
+                        "Type-check error whilst checking the return value "
+                        f"of {module_name}.{qualname}.\n"
+                        f"Actual value: {return_value}\n"
+                        f"Expected type: {return_hint}.\n"
+                        "----------------------\n"
+                        f"Called with parameters: {param_values}\n"
+                        f"Parameter annotations: {param_hints}.\n"
+                        + shape_str(memos)
+                    )
+                    if config.jaxtyping_remove_typechecker_stack:
+                        raise TypeCheckError(msg) from None
+                    else:
+                        raise TypeCheckError(msg) from e
 
-                # Actually call the function.
-                out = fn(*args, **kwargs)
+            return out
 
-                if full_signature.return_annotation is not inspect.Signature.empty:
-                    # Now type-check the return value. We need to include the
-                    # parameters in the type-checking here in case there are any
-                    # type variables shared across the parameters and return.
-                    #
-                    # Incidentally this does mean that if `fn` mutates its arguments
-                    # so that they no longer satisfy their type annotations, this
-                    # will throw an error here. But that's like, super weird, so
-                    # don't do that. An error in that scenario is probably still
-                    # desirable.
-                    #
-                    # There is a small performance concern here when used in
-                    # non-jit'd contexts, like PyTorch, due to the duplicate
-                    # checking of the parameters. Unfortunately there doesn't seem
-                    # to be a way around that, so c'est la vie.
-                    kwargs[output_name] = out
-                    try:
-                        full_fn(*args, **kwargs)
-                    except AnnotationError:
-                        raise
-                    except Exception as e:
-                        try:
-                            module_name = fn.__module__
-                            qualname = fn.__qualname__
-                        except AttributeError:
-                            module_name = fn.__class__.__module__
-                            qualname = fn.__class__.__qualname__
-                        param_values = _pformat(bound.arguments, short_self=True)
-                        return_value = _pformat(out, short_self=False)
-                        param_hints = _remove_typing(param_signature)
-                        return_hint = _remove_typing(full_signature.return_annotation)
-                        if return_hint.startswith("<class '") and return_hint.endswith(
-                            "'>"
-                        ):
-                            return_hint = return_hint[8:-2]
-                        msg = (
-                            "Type-check error whilst checking the return value "
-                            f"of {module_name}.{qualname}.\n"
-                            f"Actual value: {return_value}\n"
-                            f"Expected type: {return_hint}.\n"
-                            "----------------------\n"
-                            f"Called with parameters: {param_values}\n"
-                            f"Parameter annotations: {param_hints}.\n"
-                            + shape_str(memos)
-                        )
-                        if config.jaxtyping_remove_typechecker_stack:
-                            raise TypeCheckError(msg) from None
-                        else:
-                            raise TypeCheckError(msg) from e
+        wrapped_fn_holder = []  # Avoids introducing a reference cycle.
 
-                return out
+        @ft.wraps(fn)
+        def wrapped_fn(*args, **kwargs):
+            __tracebackhide__ = True
 
-            wrapped_fn_holder = []  # Avoids introducing a reference cycle.
+            if (
+                config.jaxtyping_disable
+                or getattr(fn, "__no_type_check__", False)
+                or getattr(wrapped_fn_holder[0](), "__no_type_check__", False)
+            ):
+                return fn(*args, **kwargs)
 
-            @ft.wraps(fn)
-            def wrapped_fn(*args, **kwargs):
-                __tracebackhide__ = True
+            # Raise bind-time errors before we do any shape analysis. (I.e. skip
+            # the pointless jaxtyping information for a non-typechecking failure.)
+            bound = param_signature.bind(*args, **kwargs)
+            bound.apply_defaults()
 
-                if (
-                    config.jaxtyping_disable
-                    or getattr(fn, "__no_type_check__", False)
-                    or getattr(wrapped_fn_holder[0](), "__no_type_check__", False)
-                ):
-                    return fn(*args, **kwargs)
+            memos = push_shape_memo(bound.arguments)
+            try:
+                # Put this in a separate frame to make debugging easier, without
+                # just always ending up on the `pop_shape_memo` line below.
+                return wrapped_fn_impl(args, kwargs, bound, memos)
+            finally:
+                pop_shape_memo()
 
-                # Raise bind-time errors before we do any shape analysis. (I.e. skip
-                # the pointless jaxtyping information for a non-typechecking failure.)
-                bound = param_signature.bind(*args, **kwargs)
-                bound.apply_defaults()
-
-                memos = push_shape_memo(bound.arguments)
-                try:
-                    # Put this in a separate frame to make debugging easier, without
-                    # just always ending up on the `pop_shape_memo` line below.
-                    return wrapped_fn_impl(args, kwargs, bound, memos)
-                finally:
-                    pop_shape_memo()
-
-            wrapped_fn_holder.append(weakref.ref(wrapped_fn))
+        wrapped_fn_holder.append(weakref.ref(wrapped_fn))
 
         return wrapped_fn
 
@@ -718,23 +688,3 @@ def _pformat(x, short_self: bool):
         return pformat(x)
     except Exception:
         return f"<Exception raised when pretty-formatting object of type {type(x)}.>"
-
-
-class _jaxtyping_note_str(str):
-    """Used with `_no_jaxtyping_note` to flag that a note came from jaxtyping."""
-
-
-def _no_jaxtyping_note(e: Exception) -> bool:
-    """Checks if any of the exception's notes are from jaxtyping."""
-    try:
-        notes = e.__notes__
-    except AttributeError:
-        return True
-    else:
-        for note in notes:
-            if isinstance(note, _jaxtyping_note_str):
-                return False
-        return True
-
-
-_spacer = "--------------------\n"
