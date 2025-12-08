@@ -23,6 +23,7 @@ import jax.random as jr
 import pytest
 import typeguard
 
+from jaxtyping import config
 
 try:
     import beartype
@@ -35,34 +36,19 @@ except ImportError:
 else:
     typecheck_params = [typeguard.typechecked, beartype.beartype]
 
+config.check_frequency = 20 # during tests turn on all checks
+
 
 @pytest.fixture(params=typecheck_params)
 def typecheck(request):
     return request.param
 
 
-@pytest.fixture(params=(False, True))
-def jaxtyp(request):
+@pytest.fixture(params=(True,))
+def jaxtyp():
     import jaxtyping
 
-    if request.param:
-        # New-style
-        # @jaxtyping.jaxtyped(typechecker=typechecker)
-        # def f(...)
-        return lambda typechecker: jaxtyping.jaxtyped(typechecker=typechecker)
-    else:
-        # Old-style
-        # @jaxtyping.jaxtyped
-        # @typechecker
-        # def f(...)
-        def impl(typechecker):
-            def decorator(fn):
-                with pytest.warns(match="As of jaxtyping version 0.2.24"):
-                    return jaxtyping.jaxtyped(typechecker(fn))
-
-            return decorator
-
-        return impl
+    return lambda typechecker: jaxtyping.jaxtyped(typechecker=typechecker)
 
 
 @pytest.fixture()
