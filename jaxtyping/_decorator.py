@@ -21,6 +21,7 @@ import dataclasses
 import functools as ft
 import inspect
 import itertools as it
+import secrets
 import sys
 import warnings
 import weakref
@@ -59,7 +60,8 @@ class _Sentinel:
 
 
 class _Counter:
-    value: int = 0
+    # intentionally random starting point
+    value: int = secrets.randbelow(2**5)
 
 
 _sentinel = _Sentinel()
