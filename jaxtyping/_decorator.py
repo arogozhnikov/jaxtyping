@@ -21,6 +21,7 @@ import dataclasses
 import functools as ft
 import inspect
 import itertools as it
+import secrets
 import sys
 import warnings
 import weakref
@@ -56,6 +57,11 @@ _TypeOrCallable = TypeVar("_TypeOrCallable", bound=Union[type, Callable])
 class _Sentinel:
     def __repr__(self):
         return "sentinel"
+
+
+class _Counter:
+    # intentionally random starting point
+    value: int = secrets.randbelow(2**5)
 
 
 _sentinel = _Sentinel()
@@ -525,6 +531,11 @@ def jaxtyped(fn=_sentinel, *, typechecker=_sentinel):
                     or getattr(wrapped_fn_holder[0](), "__no_type_check__", False)
                 ):
                     return fn(*args, **kwargs)
+
+                _Counter.value += 1
+                if _Counter.value.bit_count() > config.check_frequency:
+                    with _JaxtypingContext():
+                        return fn(*args, **kwargs)
 
                 # Raise bind-time errors before we do any shape analysis. (I.e. skip
                 # the pointless jaxtyping information for a non-typechecking failure.)
